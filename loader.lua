@@ -3,4 +3,4 @@
     Paste di executor:
 ]]
 
-loadstring(game:HttpGet("https://raw.githubusercontent.com/ahmadlagi889-commits/tempek-gag2/main/hub.lua"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/pikupik/gag-2/main/hub.lua"))()
