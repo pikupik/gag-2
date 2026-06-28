@@ -1458,3 +1458,4 @@ end)
 
 print("GAG Hub (clean edition) loaded!")
 Notify:Fire("GAG Hub loaded — toggle in UI")
+Rayfield:LoadConfiguration()
