@@ -1,60 +1,392 @@
 local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
 
--- CORE SERVICES & NETWORKING
+-- SERVICES & SETUP
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
-local VirtualUser = game:GetService("VirtualUser")
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
--- Resolving Networking Module Safely
-local Networking = nil
-pcall(function()
-    local shared = ReplicatedStorage:WaitForChild("SharedModules", 10)
-    if shared then
-        Networking = require(shared:WaitForChild("Networking", 10))
-    end
-end)
-
-if not Networking then
-    warn("[GAG Hub] Failed to load Networking module. Script may not work.")
-end
-
--- STATE MANAGEMENT (Untuk mematikan loop dengan aman)
-local States = {
-    Harvest = false,
-    Water = false,
-    Plant = false,
-    Sell = false,
-    Restock = false,
-    Gear = false,
-    Mutation = false,
-    Weather = false,
-    Steal = false,
-    PetCatch = false,
-    PetHatch = false,
-    Inventory = false,
-    SeedPack = false
+-- STATE MANAGEMENT
+local RunningModules = {}
+local Config = {
+    Timings = {
+        HarvestInterval = 0.5, SellInterval = 5, WaterInterval = 3,
+        PlantInterval = 5, RestockPollInterval = 1, StealInterval = 1.5,
+        InventoryCheckInterval = 10, PetHatchInterval = 2, SeedPackPollInterval = 2,
+        PetCatchInterval = 3
+    },
+    Restock = { TargetSeeds = {}, BlacklistedSeeds = {} },
+    Steal = { MinFruitValue = 10000, MaxAttemptsPerNight = 20 },
+    Sell = { Mode = "all", UseDailyDeal = false },
+    Plant = { OnlyEmptyPlots = true, PreferSeed = nil, GridSpacing = 3, PlantOrder = "Top", BlacklistMutated = true },
+    Water = { WaterAll = false, WaterFullyGrown = false, RequiredCan = "" },
+    Inventory = { FavoriteThreshold = 500, AutoPromote = true, DropThreshold = 5 },
+    Pet = { MinRarity = "Rare", AutoSellUnwanted = false },
+    Gear = { TargetGears = {} },
+    Server = { TargetJobId = "", AutoRejoin = true, RejoinDelay = 5, MaxRetries = 10 },
+    PetCatch = { MinRarity = "Common", AutoReturn = true }
 }
 
--- HELPER FUNCTIONS
+-- NETWORKING HELPER (From hub.lua logic)
+local NetModule = nil
+local function getNet()
+    if NetModule then return NetModule end
+    pcall(function()
+        local shared = ReplicatedStorage:WaitForChild("SharedModules", 10)
+        if shared then NetModule = require(shared:WaitForChild("Networking", 10)) end
+    end)
+    return NetModule
+end
+
+local function fireRemote(path, ...)
+    local net = getNet()
+    if not net then return false end
+    local current = net
+    for segment in string.gmatch(path, "[^%.]+") do
+        current = current[segment]
+        if not current then return false end
+    end
+    if current and current.Fire then
+        pcall(function() current:Fire(...) end)
+        return true
+    end
+    return false
+end
+
+-- UTILITIES (From hub.lua logic)
 local function getMyGarden()
     local plotId = player:GetAttribute("PlotId")
     if not plotId then return nil end
-    return workspace:FindFirstChild("Gardens") and workspace.Gardens:FindFirstChild("Plot" .. tostring(plotId))
+    local gardens = workspace:FindFirstChild("Gardens")
+    if not gardens then return nil end
+    return gardens:FindFirstChild("Plot" .. tostring(plotId))
 end
 
-local function notify(msg)
-    pcall(function()
-        game.StarterGui:SetCore("SendNotification", {
-            Title = "GAG Hub",
-            Text = msg,
-            Duration = 5
-        })
+local function findToolInBackpack(toolNamePart)
+    local bp = player:FindFirstChild("Backpack")
+    if not bp then return nil end
+    for _, tool in ipairs(bp:GetChildren()) do
+        if tool:IsA("Tool") and string.find(tool.Name, toolNamePart) then return tool end
+    end
+    return nil
+end
+
+local function isNight()
+    local night = ReplicatedStorage:FindFirstChild("Night")
+    if night then return night.Value == true end
+    return game:GetService("Lighting").ClockTime >= 18 or game:GetService("Lighting").ClockTime < 6
+end
+
+-- MODULE LOGIC WRAPPERS (Simplified for single-file usage)
+
+-- 1. AUTO HARVEST
+local function startAutoHarvest()
+    task.spawn(function()
+        while RunningModules["AutoHarvest"] do
+            pcall(function()
+                local garden = getMyGarden()
+                if not garden then task.wait(1) return end
+                local plantsFolder = garden:FindFirstChild("Plants")
+                if not plantsFolder then return end
+                for _, plant in pairs(plantsFolder:GetChildren()) do
+                    if not RunningModules["AutoHarvest"] then break end
+                    local fruits = plant:FindFirstChild("Fruits")
+                    if fruits then
+                        for _, fruit in pairs(fruits:GetChildren()) do
+                            if not RunningModules["AutoHarvest"] then break end
+                            local pId = fruit:GetAttribute("PlantId")
+                            local fId = fruit:GetAttribute("FruitId")
+                            if pId and fId then fireRemote("Garden.CollectFruit", pId, fId) task.wait(0.1) end
+                        end
+                    end
+                end
+            end)
+            task.wait(Config.Timings.HarvestInterval)
+        end
     end)
 end
 
--- WINDOW CONFIGURATION
+-- 2. AUTO WATER
+local function startAutoWater()
+    task.spawn(function()
+        while RunningModules["AutoWater"] do
+            pcall(function()
+                local garden = getMyGarden()
+                if not garden then task.wait(1) return end
+                local canTool = findToolInBackpack("Watering Can")
+                if not canTool then 
+                    local char = player.Character
+                    if char then
+                        for _, t in pairs(char:GetChildren()) do
+                            if t:IsA("Tool") and string.find(t.Name, "Watering Can") then canTool = t break end
+                        end
+                    end
+                end
+                if not canTool then task.wait(2) return end
+                
+                local humanoid = player.Character and player.Character:FindFirstChildWhichIsA("Humanoid")
+                if humanoid and canTool.Parent ~= player.Character then
+                    humanoid:EquipTool(canTool)
+                    task.wait(0.5)
+                end
+                
+                local plantsFolder = garden:FindFirstChild("Plants")
+                if plantsFolder then
+                    for _, plant in pairs(plantsFolder:GetChildren()) do
+                        if not RunningModules["AutoWater"] then break end
+                        local growth = plant:GetAttribute("Growth") or 0
+                        if growth < 1 or Config.Water.WaterFullyGrown then
+                            local rootPart = plant:FindFirstChildWhichIsA("BasePart")
+                            if rootPart then
+                                local pos = rootPart.Position - Vector3.new(0, 0.3, 0)
+                                fireRemote("WateringCan.UseWateringCan", pos, canTool.Name, canTool)
+                                task.wait(0.6)
+                            end
+                        end
+                    end
+                end
+            end)
+            task.wait(Config.Timings.WaterInterval)
+        end
+    end)
+end
+
+-- 3. AUTO PLANT
+local function startAutoPlant()
+    task.spawn(function()
+        while RunningModules["AutoPlant"] do
+            pcall(function()
+                local garden = getMyGarden()
+                if not garden then task.wait(1) return end
+                local seedTool = nil
+                local bp = player:FindFirstChild("Backpack")
+                if bp then
+                    for _, tool in ipairs(bp:GetChildren()) do
+                        if tool:IsA("Tool") and tool:GetAttribute("SeedTool") then
+                            if not Config.Plant.BlacklistMutated or not string.find(tool.Name, "Gold") and not string.find(tool.Name, "Rainbow") then
+                                seedTool = tool; break
+                            end
+                        end
+                    end
+                end
+                if not seedTool then task.wait(2) return end
+                
+                local humanoid = player.Character and player.Character:FindFirstChildWhichIsA("Humanoid")
+                if humanoid and seedTool.Parent ~= player.Character then
+                    humanoid:EquipTool(seedTool)
+                    task.wait(0.3)
+                end
+                
+                local seedName = seedTool:GetAttribute("SeedTool")
+                if not seedName then return end
+
+                local plantAreas = CollectionService:GetTagged("PlantArea")
+                for _, area in pairs(plantAreas) do
+                    if not RunningModules["AutoPlant"] then break end
+                    if area:IsDescendantOf(garden) and area:IsA("BasePart") then
+                        local pos = area.Position + Vector3.new(0, 1, 0)
+                        local isEmpty = true
+                        local plantsFolder = garden:FindFirstChild("Plants")
+                        if plantsFolder then
+                            for _, p in pairs(plantsFolder:GetChildren()) do
+                                local pr = p:FindFirstChildWhichIsA("BasePart")
+                                if pr and (pr.Position - pos).Magnitude < 2 then isEmpty = false; break end
+                            end
+                        end
+                        if isEmpty then
+                            fireRemote("Plant.PlantSeed", pos, seedName, seedTool)
+                            task.wait(0.5)
+                        end
+                    end
+                end
+            end)
+            task.wait(Config.Timings.PlantInterval)
+        end
+    end)
+end
+
+-- 4. AUTO SELL
+local function startAutoSell()
+    task.spawn(function()
+        while RunningModules["AutoSell"] do
+            pcall(function()
+                local hasFruit = false
+                local bp = player:FindFirstChild("Backpack")
+                if bp then
+                    for _, item in pairs(bp:GetChildren()) do
+                        if item:IsA("Tool") and (item:GetAttribute("FruitName") or item:GetAttribute("IsFruit")) then
+                            hasFruit = true; break
+                        end
+                    end
+                end
+                if not hasFruit and player.Character then
+                    for _, item in pairs(player.Character:GetChildren()) do
+                        if item:IsA("Tool") and (item:GetAttribute("FruitName") or item:GetAttribute("IsFruit")) then
+                            hasFruit = true; break
+                        end
+                    end
+                end
+                if hasFruit then
+                    fireRemote("NPCS.SellAll")
+                    task.wait(Config.Timings.SellInterval)
+                else
+                    task.wait(2)
+                end
+            end)
+        end
+    end)
+end
+
+-- 5. RESTOCK SNIPER (Simplified Logic)
+local function startRestockSniper()
+    task.spawn(function()
+        while RunningModules["RestockSniper"] do
+            pcall(function()
+                local stockFolder = ReplicatedStorage:FindFirstChild("StockValues")
+                if stockFolder then
+                    local seedShop = stockFolder:FindFirstChild("SeedShop")
+                    if seedShop then
+                        local items = seedShop:FindFirstChild("Items")
+                        if items then
+                            for _, target in ipairs(Config.Restock.TargetSeeds) do
+                                if not RunningModules["RestockSniper"] then break end
+                                local stockVal = items:FindFirstChild(target)
+                                if stockVal and stockVal:IsA("ValueBase") and stockVal.Value > 0 then
+                                    -- Check money (simplified)
+                                    local leaderstats = player:FindFirstChild("leaderstats")
+                                    local sheckles = leaderstats and leaderstats:FindFirstChild("Sheckles")
+                                    if sheckles and sheckles.Value > 100 then -- Asumsi harga minimal
+                                        fireRemote("SeedShop.PurchaseSeed", target)
+                                        task.wait(0.5)
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            task.wait(Config.Timings.RestockPollInterval)
+        end
+    end)
+end
+
+-- 6. STEAL BOT (Night Only)
+local function startStealBot()
+    task.spawn(function()
+        while RunningModules["StealBot"] do
+            if isNight() then
+                pcall(function()
+                    local myPlotId = player:GetAttribute("PlotId")
+                    local gardens = workspace:FindFirstChild("Gardens")
+                    if gardens then
+                        for _, garden in pairs(gardens:GetChildren()) do
+                            if not RunningModules["StealBot"] then break end
+                            local plotNum = tonumber(garden.Name:match("Plot(%d+)"))
+                            if plotNum and plotNum ~= myPlotId then
+                                -- Cek jika pemilik tidak ada di plot (Simplified)
+                                local plants = garden:FindFirstChild("Plants")
+                                if plants then
+                                    for _, plant in pairs(plants:GetChildren()) do
+                                        local fruits = plant:FindFirstChild("Fruits")
+                                        if fruits then
+                                            for _, fruit in pairs(fruits:GetChildren()) do
+                                                local prompt = fruit:FindFirstChild("StealPrompt")
+                                                if prompt and prompt:IsA("ProximityPrompt") and prompt.Enabled then
+                                                    -- Teleport & Steal Logic Simplified
+                                                    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                                                    if hrp then
+                                                        local oldPos = hrp.CFrame
+                                                        hrp.CFrame = fruit.CFrame + Vector3.new(0, 2, 0)
+                                                        task.wait(0.5)
+                                                        if fireproximityprompt then fireproximityprompt(prompt) end
+                                                        task.wait(1)
+                                                        hrp.CFrame = oldPos
+                                                    end
+                                                end
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end)
+            end
+            task.wait(Config.Timings.StealInterval)
+        end
+    end)
+end
+
+-- 7. AUTO PET CATCH (Simplified)
+local function startAutoPetCatch()
+    task.spawn(function()
+        while RunningModules["AutoPetCatch"] do
+            pcall(function()
+                local map = workspace:FindFirstChild("Map")
+                if map then
+                    local spawns = map:FindFirstChild("WildPetSpawns")
+                    if spawns then
+                        for _, petModel in pairs(spawns:GetChildren()) do
+                            if not RunningModules["AutoPetCatch"] then break end
+                            if petModel:IsA("Model") then
+                                local prompt = petModel:FindFirstChildWhichIsA("ProximityPrompt")
+                                if prompt and prompt.Enabled then
+                                    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                                    if hrp then
+                                        local oldPos = hrp.CFrame
+                                        hrp.CFrame = petModel.PrimaryPart.CFrame + Vector3.new(0, 2, 0)
+                                        task.wait(0.5)
+                                        if fireproximityprompt then fireproximityprompt(prompt) end
+                                        task.wait(1)
+                                        hrp.CFrame = oldPos
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            task.wait(Config.Timings.PetCatchInterval)
+        end
+    end)
+end
+
+-- 8. SEED PACK CLAIMER
+local function startSeedPackClaimer()
+    task.spawn(function()
+        while RunningModules["SeedPackClaimer"] do
+            pcall(function()
+                local map = workspace:FindFirstChild("Map")
+                if map then
+                    local spawns = map:FindFirstChild("SeedPackSpawnServerLocations")
+                    if spawns then
+                        for _, pack in pairs(spawns:GetChildren()) do
+                            if not RunningModules["SeedPackClaimer"] then break end
+                            if pack:IsA("BasePart") then
+                                local prompt = pack:FindFirstChildWhichIsA("ProximityPrompt")
+                                if prompt and prompt.Enabled then
+                                    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                                    if hrp then
+                                        local oldPos = hrp.CFrame
+                                        hrp.CFrame = pack.CFrame + Vector3.new(0, 2, 0)
+                                        task.wait(0.5)
+                                        if fireproximityprompt then fireproximityprompt(prompt) end
+                                        task.wait(1)
+                                        hrp.CFrame = oldPos
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+            task.wait(Config.Timings.SeedPackPollInterval)
+        end
+    end)
+end
+
+-- UI CREATION
 local Window = Rayfield:CreateWindow({
    Name = "Nexera - GAG 2",
    Icon = 0,
@@ -64,273 +396,146 @@ local Window = Rayfield:CreateWindow({
    Theme = "Default",
    ToggleUIKeybind = "K",
    DisableRayfieldPrompts = false,
+   DisableBuildWarnings = false,
    ConfigurationSaving = {
       Enabled = true,
       FolderName = nil,
       FileName = "Big Hub"
    },
+   Discord = {
+      Enabled = false,
+      Invite = "noinvitelink",
+      RememberJoins = true
+   },
    KeySystem = false,
 })
 
--- ==========================================
--- TAB 1: FARMING
--- ==========================================
-local FarmTab = Window:CreateTab("Farm", 6034510) -- Using icon ID for safety
+-- TAB: FARMING
+local FarmTab = Window:CreateTab("Farm", "sprout")
 
--- AUTO HARVEST LOGIC
 FarmTab:CreateToggle({
    Name = "Auto Harvest",
    CurrentValue = false,
    Flag = "AutoHarvestToggle",
    Callback = function(Value)
-      States.Harvest = Value
-      if Value then
-         notify("🌾 Auto Harvest Started")
-         task.spawn(function()
-            while States.Harvest do
-               pcall(function()
-                  local garden = getMyGarden()
-                  if garden then
-                     local plants = garden:FindFirstChild("Plants")
-                     if plants then
-                        for _, plant in pairs(plants:GetChildren()) do
-                           if not States.Harvest then break end
-                           local fruits = plant:FindFirstChild("Fruits")
-                           if fruits then
-                              for _, fruit in pairs(fruits:GetChildren()) do
-                                 if not States.Harvest then break end
-                                 local plantId = fruit:GetAttribute("PlantId")
-                                 local fruitId = fruit:GetAttribute("FruitId")
-                                 if plantId and fruitId and Networking then
-                                    Networking.Garden.CollectFruit:Fire(plantId, fruitId)
-                                    task.wait(0.1)
-                                 end
-                              end
-                           end
-                        end
-                     end
-                  end
-               end)
-               task.wait(0.5)
-            end
-         end)
-      else
-         notify("⛔ Auto Harvest Stopped")
-      end
+      RunningModules["AutoHarvest"] = Value
+      if Value then startAutoHarvest() end
    end,
 })
 
--- AUTO WATER LOGIC
 FarmTab:CreateToggle({
-   Name = "Auto Water All Plants",
+   Name = "Auto Water",
    CurrentValue = false,
    Flag = "AutoWaterToggle",
    Callback = function(Value)
-      States.Water = Value
-      if Value then
-         notify("💧 Auto Water Started")
-         task.spawn(function()
-            while States.Water do
-               pcall(function()
-                  local garden = getMyGarden()
-                  if garden then
-                     local plants = garden:FindFirstChild("Plants")
-                     if plants then
-                        for _, plant in pairs(plants:GetChildren()) do
-                           if not States.Water then break end
-                           local growth = plant:GetAttribute("Growth")
-                           if growth and growth < 1 then 
-                              local pos = plant.PrimaryPart and plant.PrimaryPart.Position or plant:GetPivot().Position
-                              if Networking then
-                                 -- Note: You might need to find the specific watering can tool in your backpack first
-                                 Networking.WateringCan.UseWateringCan:Fire(pos, "Common Watering Can", nil) 
-                                 task.wait(0.5)
-                              end
-                           end
-                        end
-                     end
-                  end
-               end)
-               task.wait(3)
-            end
-         end)
-      else
-         notify("⛔ Auto Water Stopped")
-      end
+      RunningModules["AutoWater"] = Value
+      if Value then startAutoWater() end
    end,
 })
 
--- AUTO PLANT LOGIC
 FarmTab:CreateToggle({
-   Name = "Auto Plant Seeds",
+   Name = "Auto Plant",
    CurrentValue = false,
    Flag = "AutoPlantToggle",
    Callback = function(Value)
-      States.Plant = Value
-      if Value then
-         notify("🌱 Auto Plant Started")
-         task.spawn(function()
-            while States.Plant do
-               pcall(function()
-                  local garden = getMyGarden()
-                  if garden then
-                     -- Logic for finding empty spots and planting would go here
-                     -- This is a simplified version as full grid logic is complex
-                     local plantAreas = CollectionService:GetTagged("PlantArea")
-                     for _, area in ipairs(plantAreas) do
-                        if area:IsDescendantOf(garden) and area:IsA("BasePart") then
-                           local pos = area.Position + Vector3.new(0, area.Size.Y/2, 0)
-                           if Networking then
-                              Networking.Plant.PlantSeed:Fire(pos, "Strawberry", nil) -- Example seed
-                              task.wait(0.5)
-                           end
-                        end
-                     end
-                  end
-               end)
-               task.wait(5)
-            end
-         end)
-      else
-         notify("⛔ Auto Plant Stopped")
-      end
+      RunningModules["AutoPlant"] = Value
+      if Value then startAutoPlant() end
    end,
 })
 
--- ==========================================
--- TAB 2: ECONOMY
--- ==========================================
-local EconTab = Window:CreateTab("Economy", 6031790)
+-- TAB: ECONOMY
+local EconTab = Window:CreateTab("Economy", "dollar-sign")
 
--- AUTO SELL LOGIC
 EconTab:CreateToggle({
-   Name = "Auto Sell (When Full)",
+   Name = "Auto Sell (All)",
    CurrentValue = false,
    Flag = "AutoSellToggle",
    Callback = function(Value)
-      States.Sell = Value
-      if Value then
-         notify("💰 Auto Sell Active")
-         task.spawn(function()
-            while States.Sell do
-               pcall(function()
-                  local fruitCount = player:GetAttribute("FruitCount")
-                  local maxFruits = player:GetAttribute("MaxFruitCapacity")
-                  
-                  if fruitCount and maxFruits and fruitCount >= (maxFruits * 0.8) then
-                     if Networking then
-                        Networking.NPCS.SellAll:Fire()
-                        notify("📦 Backpack Sold!")
-                     end
-                     task.wait(5)
-                  end
-               end)
-               task.wait(2)
-            end
-         end)
-      else
-         notify("⛔ Auto Sell Disabled")
-      end
+      RunningModules["AutoSell"] = Value
+      if Value then startAutoSell() end
    end,
 })
 
--- RESTOCK SNIPER
 EconTab:CreateToggle({
    Name = "Restock Sniper",
    CurrentValue = false,
    Flag = "RestockSniperToggle",
    Callback = function(Value)
-      States.Restock = Value
-      if Value then
-         notify("🎯 Restock Sniper Active")
-         task.spawn(function()
-            while States.Restock do
-               pcall(function()
-                  -- Logic to check stock and buy seeds
-                  if Networking then
-                     Networking.SeedShop.PurchaseSeed:Fire("Strawberry") -- Example
-                  end
-               end)
-               task.wait(1)
-            end
-         end)
-      else
-         notify("⛔ Restock Sniper Disabled")
-      end
+      RunningModules["RestockSniper"] = Value
+      if Value then startRestockSniper() end
    end,
 })
 
--- ==========================================
--- TAB 3: EVENTS & PETS
--- ==========================================
-local EventTab = Window:CreateTab("Events", 6035974)
+EconTab:CreateDropdown({
+    Name = "Target Seeds for Restock",
+    Options = {"Carrot", "Strawberry", "Blueberry", "Tomato", "Apple"}, -- Tambahkan seed lain sesuai game
+    CurrentOption = {"Carrot"},
+    MultipleOptions = true,
+    Flag = "RestockTargets",
+    Callback = function(Options)
+        Config.Restock.TargetSeeds = Options
+    end
+})
 
--- STEAL BOT
+-- TAB: EVENTS & MISC
+local EventTab = Window:CreateTab("Events", "zap")
+
 EventTab:CreateToggle({
    Name = "Steal Bot (Night Only)",
    CurrentValue = false,
    Flag = "StealBotToggle",
    Callback = function(Value)
-      States.Steal = Value
-      if Value then
-         notify("🌙 Steal Bot Active")
-         task.spawn(function()
-            while States.Steal do
-               pcall(function()
-                  -- Logic to find unlocked gardens and steal
-                  if Networking then
-                     -- Networking.Steal.BeginSteal:Fire(...)
-                  end
-               end)
-               task.wait(1.5)
-            end
-         end)
-      else
-         notify("⛔ Steal Bot Disabled")
-      end
+      RunningModules["StealBot"] = Value
+      if Value then startStealBot() end
    end,
 })
 
--- AUTO PET CATCH
 EventTab:CreateToggle({
    Name = "Auto Pet Catch",
    CurrentValue = false,
    Flag = "AutoPetCatchToggle",
    Callback = function(Value)
-      States.PetCatch = Value
-      if Value then
-         notify("🐾 Auto Pet Catch Active")
-         task.spawn(function()
-            while States.PetCatch do
-               pcall(function()
-                  -- Logic to find wild pets and tame them
-                  if Networking then
-                     -- Networking.Pets.WildPetTame:Fire(...)
-                  end
-               end)
-               task.wait(3)
-            end
-         end)
-      else
-         notify("⛔ Auto Pet Catch Disabled")
-      end
+      RunningModules["AutoPetCatch"] = Value
+      if Value then startAutoPetCatch() end
    end,
 })
 
--- ==========================================
--- TAB 4: STATUS
--- ==========================================
-local StatusTab = Window:CreateTab("Status", 6030690)
+EventTab:CreateToggle({
+   Name = "Auto Seed Pack Claimer",
+   CurrentValue = false,
+   Flag = "SeedPackClaimerToggle",
+   Callback = function(Value)
+      RunningModules["SeedPackClaimer"] = Value
+      if Value then startSeedPackClaimer() end
+   end,
+})
 
-StatusTab:CreateButton({Name="✅ Enable All", Callback=function() 
-    for k, v in pairs(States) do States[k] = true end 
-    notify("All Modules Enabled")
-end})
+-- TAB: SETTINGS
+local SettingsTab = Window:CreateTab("Settings", "settings")
 
-StatusTab:CreateButton({Name="❌ Disable All", Callback=function() 
-    for k, v in pairs(States) do States[k] = false end 
-    notify("All Modules Disabled")
-end})
+SettingsTab:CreateSlider({
+    Name = "Harvest Interval",
+    Range = {0.1, 2},
+    Increment = 0.1,
+    Suffix = "s",
+    CurrentValue = 0.5,
+    Flag = "HarvestIntervalSlider",
+    Callback = function(Value)
+        Config.Timings.HarvestInterval = Value
+    end
+})
+
+SettingsTab:CreateSlider({
+    Name = "Water Interval",
+    Range = {1, 10},
+    Increment = 1,
+    Suffix = "s",
+    CurrentValue = 3,
+    Flag = "WaterIntervalSlider",
+    Callback = function(Value)
+        Config.Timings.WaterInterval = Value
+    end
+})
 
 Rayfield:LoadConfiguration()
-print("GAG Hub Clean Edition Loaded Successfully!")
+print("Nexera GAG 2 Full Version Loaded")
