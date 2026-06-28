@@ -4348,10 +4348,22 @@ local function createUI()
 
     local Window = Rayfield:CreateWindow({
         Name = "🌿 " .. Config.UI.Title .. " v" .. VERSION,
+        Icon = 0,
         LoadingTitle = Config.UI.Title .. " v" .. VERSION,
         LoadingSubtitle = "by Brave",
+        ShowText = "GAG Hub",
+        Theme = "Default",
+        ToggleUIKeybind = "K",
+        DisableRayfieldPrompts = false,
+        DisableBuildWarnings = false,
         ConfigurationSaving = { Enabled = true, FolderName = "GAGHub", FileName = "config" },
-        Discord = { Enabled = false }, KeySystem = false,
+        Discord = { Enabled = false },
+        KeySystem = false,
+        KeySettings = {
+            Title = "GAG Hub", Subtitle = "Key System",
+            Note = "No key required", FileName = "GAGHubKey",
+            SaveKey = true, GrabKeyFromSite = false, Key = {""}
+        }
     })
 
     -------------------------------------------------------
@@ -4380,12 +4392,12 @@ local function createUI()
 
     FarmTab:CreateSection("💧 Water Config")
     FarmTab:CreateToggle({Name="Water Fully Grown", CurrentValue=false, Flag="WaterFullyGrown", Callback=function(v) Config.Water.WaterFullyGrown=v end})
-    FarmTab:CreateDropdown({Name="Required Can (empty=any)", Options={"","Common Watering Can","Super Watering Can"}, CurrentOption=Config.Water.RequiredCan, Flag="RequiredCan", Callback=function(v) Config.Water.RequiredCan=v end})
+    FarmTab:CreateDropdown({Name="Required Can (empty=any)", Options={"","Common Watering Can","Super Watering Can"}, CurrentOption={Config.Water.RequiredCan}, Flag="RequiredCan", MultipleOptions=false, Callback=function(opts) Config.Water.RequiredCan = type(opts)=="table" and opts[1] or opts end})
 
     FarmTab:CreateSection("🌱 Plant Config")
-    FarmTab:CreateDropdown({Name="Plant Order", Options={"Top","Bottom","Random"}, CurrentOption=Config.Plant.PlantOrder, Flag="PlantOrder", Callback=function(v) Config.Plant.PlantOrder=v end})
+    FarmTab:CreateDropdown({Name="Plant Order", Options={"Top","Bottom","Random"}, CurrentOption={Config.Plant.PlantOrder}, Flag="PlantOrder", MultipleOptions=false, Callback=function(opts) Config.Plant.PlantOrder = type(opts)=="table" and opts[1] or opts end})
     FarmTab:CreateSlider({Name="Grid Spacing", Range={2,8}, Increment=0.5, Suffix=" studs", CurrentValue=Config.Plant.GridSpacing, Flag="GridSpacing", Callback=function(v) Config.Plant.GridSpacing=v end})
-    FarmTab:CreateInput({Name="Prefer Seed (empty=any)", PlaceholderText="e.g. Carrot", RemoveTextAfterFocusLost=false, Flag="PreferSeed", Callback=function(v) Config.Plant.PreferSeed = (v~="" and v or nil) end})
+    FarmTab:CreateInput({Name="Prefer Seed (empty=any)", CurrentValue="", PlaceholderText="e.g. Carrot", RemoveTextAfterFocusLost=false, Flag="PreferSeed", Callback=function(v) Config.Plant.PreferSeed = (v~="" and v or nil) end})
     FarmTab:CreateToggle({Name="Skip Mutated Seeds", CurrentValue=Config.Plant.BlacklistMutated, Flag="BlacklistMutated", Callback=function(v) Config.Plant.BlacklistMutated=v end})
 
     -------------------------------------------------------
@@ -4396,13 +4408,13 @@ local function createUI()
     ShopTab:CreateSection("🎯 Restock Sniper")
     ShopTab:CreateToggle({Name="Enabled", CurrentValue=false, Flag="RestockSniper", Callback=function(v) if v then startModule("RestockSniper") else stopModule("RestockSniper") end end})
     ShopTab:CreateSlider({Name="Poll", Range={0.5,5}, Increment=0.5, Suffix="s", CurrentValue=Config.Timings.RestockPollInterval, Flag="RestockPollInterval", Callback=function(v) Config.Timings.RestockPollInterval=v end})
-    ShopTab:CreateDropdown({Name="Buy Targets", Options=AllSeeds, CurrentOption=Config.Restock.TargetSeeds, MultipleOptions=true, Flag="RestockTargets", Callback=function(opts) Config.Restock.TargetSeeds=opts end})
-    ShopTab:CreateDropdown({Name="Blacklist", Options=AllSeeds, CurrentOption=Config.Restock.BlacklistedSeeds, MultipleOptions=true, Flag="RestockBlacklist", Callback=function(opts) Config.Restock.BlacklistedSeeds=opts end})
+    ShopTab:CreateDropdown({Name="Buy Targets", Options=AllSeeds, CurrentOption=Config.Restock.TargetSeeds, MultipleOptions=true, Flag="RestockTargets", Callback=function(opts) Config.Restock.TargetSeeds = type(opts)=="table" and opts or {opts} end})
+    ShopTab:CreateDropdown({Name="Blacklist", Options=AllSeeds, CurrentOption=Config.Restock.BlacklistedSeeds, MultipleOptions=true, Flag="RestockBlacklist", Callback=function(opts) Config.Restock.BlacklistedSeeds = type(opts)=="table" and opts or {opts} end})
 
     ShopTab:CreateSection("🔧 Auto Buy Gear")
     ShopTab:CreateToggle({Name="Enabled", CurrentValue=false, Flag="GearBuyer", Callback=function(v) if v then startModule("GearBuyer") else stopModule("GearBuyer") end end})
     ShopTab:CreateSlider({Name="Poll Interval", Range={1,10}, Increment=1, Suffix="s", CurrentValue=5, Flag="GearPollInterval", Callback=function(v) Config.Gear.PollInterval=v end})
-    ShopTab:CreateDropdown({Name="Buy Gears", Options=AllGears, CurrentOption=Config.Gear.TargetGears, MultipleOptions=true, Flag="GearTargets", Callback=function(opts) Config.Gear.TargetGears=opts end})
+    ShopTab:CreateDropdown({Name="Buy Gears", Options=AllGears, CurrentOption=Config.Gear.TargetGears, MultipleOptions=true, Flag="GearTargets", Callback=function(opts) Config.Gear.TargetGears = type(opts)=="table" and opts or {opts} end})
 
     ShopTab:CreateSection("📦 Inventory")
     ShopTab:CreateToggle({Name="Optimizer", CurrentValue=false, Flag="InventoryOptimizer", Callback=function(v) if v then startModule("InventoryOptimizer") else stopModule("InventoryOptimizer") end end})
@@ -4411,7 +4423,7 @@ local function createUI()
     ShopTab:CreateSection("🐾 Pets")
     ShopTab:CreateToggle({Name="Auto Hatch", CurrentValue=false, Flag="AutoBuyPet", Callback=function(v) if v then startModule("AutoBuyPet") else stopModule("AutoBuyPet") end end})
     ShopTab:CreateSlider({Name="Hatch", Range={1,10}, Increment=0.5, Suffix="s", CurrentValue=Config.Timings.PetHatchInterval, Flag="PetHatchInterval", Callback=function(v) Config.Timings.PetHatchInterval=v end})
-    ShopTab:CreateDropdown({Name="Min Rarity", Options={"Common","Uncommon","Rare","Legendary","Mythic","Super"}, CurrentOption={Config.Pet.MinRarity}, MultipleOptions=false, Flag="PetMinRarity", Callback=function(opt) Config.Pet.MinRarity=type(opt)=="table" and opt[1] or opt end})
+    ShopTab:CreateDropdown({Name="Min Rarity", Options={"Common","Uncommon","Rare","Legendary","Mythic","Super"}, CurrentOption={Config.Pet.MinRarity}, MultipleOptions=false, Flag="PetMinRarity", Callback=function(opt) Config.Pet.MinRarity = type(opt)=="table" and opt[1] or opt end})
     ShopTab:CreateToggle({Name="Sell Unwanted", CurrentValue=Config.Pet.AutoSellUnwanted, Flag="PetAutoSell", Callback=function(v) Config.Pet.AutoSellUnwanted=v end})
 
     -------------------------------------------------------
@@ -4434,7 +4446,7 @@ local function createUI()
     EventTab:CreateSection("🐾 Wild Pet Catch")
     EventTab:CreateToggle({Name="Auto Catch", CurrentValue=false, Flag="AutoPetCatch", Callback=function(v) if v then startModule("AutoPetCatch") else stopModule("AutoPetCatch") end end})
     EventTab:CreateSlider({Name="Scan", Range={1,15}, Increment=1, Suffix="s", CurrentValue=Config.Timings.PetCatchInterval, Flag="PetCatchInterval", Callback=function(v) Config.Timings.PetCatchInterval=v end})
-    EventTab:CreateDropdown({Name="Min Rarity", Options={"Common","Uncommon","Rare","Legendary","Mythic","Super"}, CurrentOption={Config.PetCatch.MinRarity}, MultipleOptions=false, Flag="PetCatchMinRarity", Callback=function(opt) Config.PetCatch.MinRarity=type(opt)=="table" and opt[1] or opt end})
+    EventTab:CreateDropdown({Name="Min Rarity", Options={"Common","Uncommon","Rare","Legendary","Mythic","Super"}, CurrentOption={Config.PetCatch.MinRarity}, MultipleOptions=false, Flag="PetCatchMinRarity", Callback=function(opt) Config.PetCatch.MinRarity = type(opt)=="table" and opt[1] or opt end})
     EventTab:CreateToggle({Name="Return After Catch", CurrentValue=Config.PetCatch.AutoReturn, Flag="PetCatchAutoReturn", Callback=function(v) Config.PetCatch.AutoReturn=v end})
 
     EventTab:CreateSection("🌙 Steal Bot")
@@ -4468,6 +4480,7 @@ local function createUI()
     ServerTab:CreateSection("🚀 Join Target Server")
     ServerTab:CreateInput({
         Name = "Target JobId",
+        CurrentValue = "",
         PlaceholderText = "Paste server JobId here...",
         RemoveTextAfterFocusLost = false,
         Flag = "TargetJobId",
